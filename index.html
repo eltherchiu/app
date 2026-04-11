@@ -539,16 +539,16 @@ async function syncFromSheets(silent=false){
     if(json.status==='ok' && json.data){
       // Merge: keep local entries not yet in sheets, plus all sheets entries
       const sheetsEntries = json.data
-        .filter(r=>r['日期']||r['金額'])
+        .filter(r=>r['Date']||r['Momey'])
         .map(r=>({
-          id: r['日期']+'_'+r['金額']+'_'+r['描述'],
-          date: r['日期']||'',
-          category: catIdFromName(r['分類']||''),
-          description: r['描述']||'',
-          payment: r['付款方式']||'',
-          amount: parseFloat(r['金額'])||0,
-          notes: r['備註']||'',
-          isIncome: (r['分類']||'')==='收入',
+          id: r['Date']+'_'+r['Momey']+'_'+r['Description'],
+          date: String(r['Date']||'').slice(0,10),
+          category: catIdFromName(r['Category']||''),
+          description: r['Description']||'',
+          payment: r['Payment']||'',
+          amount: parseFloat(r['Momey'])||0,
+          notes: r['Note']||'',
+          isIncome: (r['Category']||'')==='收入'||(r['Category']||'')==='income',
           synced: true,
         }));
       // Merge: sheets entries + local unsynced
@@ -570,9 +570,16 @@ async function syncFromSheets(silent=false){
 }
 
 function catIdFromName(name){
-  const map={'餐飲':'food','超市':'grocery','交通':'transport','教育':'education',
+  const map={
+    '餐飲':'food','超市':'grocery','交通':'transport','教育':'education',
     '購物':'shopping','運動':'sport','醫療':'health','帳單':'utilities',
-    '住房':'housing','旅遊':'travel','收入':'income','提款':'atm','其他':'other'};
+    '住房':'housing','旅遊':'travel','收入':'income','提款':'atm','其他':'other',
+    'Food & Dining':'food','Grocery':'grocery','Transport':'transport',
+    'Education':'education','Shopping':'shopping','Sport & Activity':'sport',
+    'Health & Medical':'health','Utilities & Bills':'utilities',
+    'Housing & Rent':'housing','Travel':'travel','Income / Deposit':'income',
+    'ATM / Bank Transfer':'atm','Other':'other',
+  };
   return map[name]||'other';
 }
 
@@ -606,7 +613,7 @@ async function saveEntry(){
   closeModal();
   showToast('💾 儲存中...','ok');
 
-  // Send to Google Sheets
+  // Send to Google Sheets via form POST (avoids CORS)
   const btn = document.getElementById('save-btn');
   btn.disabled=true;
   try {
@@ -616,17 +623,56 @@ async function saveEntry(){
       description: entry.description,
       payment: entry.payment,
       amount: entry.amount,
-      notes: entry.notes,
+      notes: entry.notes || '',
     };
-    await fetch(API, {
-      method:'POST',
-      mode:'no-cors',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload),
-    });
-    entry.synced=true;
-    localStorage.setItem('qiandaizi_v1', JSON.stringify(entries));
-    showToast('✅ 已同步到 Google Sheets','ok');
+    // Use no-cors mode with form data to bypass CORS restrictions
+    const formData = new FormData();
+    formData.append('payload', JSON.stringify(payload));
+    
+    // Try fetch with no-cors first, fallback to iframe method
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    
+    try {
+      await fetch(API, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      entry.synced = true;
+      localStorage.setItem('qiandaizi_v1', JSON.stringify(entries));
+      showToast('✅ 已同步到 Google Sheets','ok');
+    } catch(fetchErr) {
+      clearTimeout(timeout);
+      // Fallback: use hidden iframe form submission
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = API;
+      form.target = '_sheets_sync';
+      form.style.display = 'none';
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'payload';
+      input.value = JSON.stringify(payload);
+      form.appendChild(input);
+      let iframe = document.getElementById('_sheets_iframe');
+      if(!iframe){
+        iframe = document.createElement('iframe');
+        iframe.name = '_sheets_sync';
+        iframe.id = '_sheets_iframe';
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
+      }
+      document.body.appendChild(form);
+      form.submit();
+      document.body.removeChild(form);
+      entry.synced = true;
+      localStorage.setItem('qiandaizi_v1', JSON.stringify(entries));
+      showToast('✅ 已同步到 Google Sheets','ok');
+    }
   } catch(e){
     showToast('⚠️ 本機已儲存，稍後同步','err');
   }
